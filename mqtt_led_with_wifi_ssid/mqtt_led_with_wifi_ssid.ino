@@ -6,9 +6,6 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WiFiMulti.h>
 #include <ESP8266WebServer.h>
-#include <WiFiClient.h>
-#include <WiFiServer.h>
-#include <WiFiUdp.h>
 
 enum {
   //  APPLICATION_WEBSERVER = 0,
@@ -24,6 +21,8 @@ String st;
 String content;
 char topic[] = "home/bedroom/led"; //MQTT topic
 char broker[] = "casa-granzotto.ddns.net"; //MQTT broker
+char mqttUser[] = "osmc";
+char mqttPassword[] = "84634959";
 boolean connectedToBroker = false;
 
 int led = 2;
@@ -73,19 +72,20 @@ void setupApplication() {
   }
   pinMode(led, OUTPUT);
   delay(10);
-  clientMQTT.set_callback(callback);
+  
+  connectToBroker();
+}
 
+void connectToBroker() {
+  clientMQTT.set_callback(callback);
   uint8_t mac[6];
   WiFi.macAddress(mac);
-  String macStr = macToStr(mac);
-  if (clientMQTT.connect(macStr)) {
+  String clientID = "esp_" + macToStr(mac);
+  if (clientMQTT.connect(MQTT::Connect(clientID).set_auth(mqttUser, mqttPassword))) {
     Serial.print("connected to MQTT broker!");
     connectedToBroker = true;
     clientMQTT.subscribe(topic);
   }
-
-  //launchWeb(APPLICATION_WEBSERVER); // In this example just launch a
-  // web server
 }
 
 void setupAccessPoint(void) {
@@ -145,21 +145,14 @@ void launchWeb(int webservertype) {
   Serial.print("Server type ");
   Serial.print(webservertype);
   Serial.println(" started");
-  //  WiFi.printDiag(Serial);
 }
 
-void setupWebServerHandlers(int webservertype)
-{
+void setupWebServerHandlers(int webservertype) {
   if ( webservertype == ACCESS_POINT_WEBSERVER ) {
     server.on("/", handleDisplayAccessPoints);
     server.on("/setap", handleSetAccessPoint);
     server.onNotFound(handleNotFound);
   }
-  //  else if (webservertype == APPLICATION_WEBSERVER) {
-  //    server.on("/", handleRoot);
-  //    server.on("/setap", handleAccessPointAlreadySet);
-  //    server.onNotFound(handleNotFound);
-  //  }
 }
 
 void handleDisplayAccessPoints() {
@@ -222,30 +215,6 @@ void handleSetAccessPoint() {
   server.send(httpstatus, "text/html", content);
 }
 
-//void handleRoot() {
-//  IPAddress ip = WiFi.localIP();
-//  String ipStr = String(ip[0]) + '.' + String(ip[1]) + '.' + String(ip[2]) + '.' + String(ip[3]);
-//  uint8_t mac[6];
-//  WiFi.macAddress(mac);
-//  String macStr = macToStr(mac);
-//  content = "<!DOCTYPE HTML>\n<html>Hello from ";
-//  content += ssid;
-//  content += " at ";
-//  content += ipStr;
-//  content += " (";
-//  content += macStr;
-//  content += ")";
-//  content += "</html>";
-//  server.send(200, "text/html", content);
-//}
-
-//void handleAccessPointAlreadySet() {
-//  content = "<!DOCTYPE HTML>\n<html>";
-//  content += "You already set up the access point and it is working if you got this far.";
-//  content += "</html>";
-//  server.send(200, "text/html", content);
-//}
-
 void handleNotFound() {
   content = "File Not Found\n\n";
   content += "URI: ";
@@ -263,9 +232,14 @@ void handleNotFound() {
 
 void loop() {
   if (connectedToBroker) {
-    clientMQTT.loop();
+    connectedToBroker = clientMQTT.loop();
   } else {
-    server.handleClient();  // In this example we're not doing too much
+    if (testWifi()){
+      Serial.print("connection with broker lost!");
+      connectToBroker(); //reconnects to the broker
+    } else {
+      server.handleClient();  // In this example we're not doing too much
+    }
   }
 }
 
