@@ -3,10 +3,13 @@
 #include <MQTT.h>
 #include <PubSubClient.h>
 #include <EEPROM.h>
+#include "EEPROMAnything.h"
+#include "DeviceConfiguration.h"
 
 #include <ESP8266WiFi.h>
 #include <ESP8266WiFiMulti.h>
 #include <ESP8266WebServer.h>
+#include <string.h>
 
 #define EEPROM_MAX_ADDRS 512
 #define CONFIRMATION_NUMBER 42
@@ -23,15 +26,9 @@ const char* ssid = "";  // Use this as the ssid as well
 const char* passphrase = "esp8266e";
 String st;
 String content;
-String broker; //= "casa-granzotto.ddns.net"; //MQTT broker
-String topic; //= "home/bedroom/led"; //MQTT topic
-String mqttUser; // = "osmc";
-String mqttPassword; // = "84634959";
-String wifiSsid;
-String wifiPass;
 boolean connectedToBroker = false;
 
-
+DeviceConfiguration conf;
 int led = 2;
 
 void callback(const MQTT::Publish& pub) {
@@ -44,70 +41,42 @@ void callback(const MQTT::Publish& pub) {
 }
 
 WiFiClient wclient;
-PubSubClient clientMQTT(wclient, broker);
+PubSubClient clientMQTT(wclient, conf.broker);
+bool shouldRunLoop = false;
 
 void setup() {
   Serial.begin(115200);
   EEPROM.begin(EEPROM_MAX_ADDRS);
-  delay(10);
+  delay(5000);
   Serial.println("Yellow World");
-  bool mqttSuccess = readMQTTSettingFromEEPROM();
-  WiFi.mode(WIFI_STA);  // Assume we've already been configured
-  WiFi.persistent(false);
-  WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
+  bool configurationsRead = readMQTTSettingFromEEPROM();
   //  Serial.setDebugOutput(true);
   //  WiFi.printDiag(Serial);
-  if (mqttSuccess && testWifi()) {
-    Serial.println("Could connect and read MQTT Settings. Starting on application mode");
-    setupApplication(); // WiFi established, setup application
-  } else {
-    Serial.println("Could NOT connect and read MQTT Settings. Starting on access point mode");
+  if(configurationsRead){
+    WiFi.mode(WIFI_STA);
+    WiFi.persistent(false);
+    WiFi.begin(conf.wifiSsid, conf.wifiPass);
+    if (testWifi()) {
+      Serial.println("Could connect and read MQTT Settings. Starting on application mode");
+      setupApplication(); // WiFi established, setup application
+      shouldRunLoop = true;
+    } else {
+      Serial.println("Could NOT connect. Starting on access point mode");
+      setupAccessPoint(); // No WiFi or MQTT Settings yet, enter configuration mode
+    }
+  }else {
+    Serial.println("Could NOT read configurations. Starting on access point mode");
     setupAccessPoint(); // No WiFi or MQTT Settings yet, enter configuration mode
   }
 }
 
 boolean readMQTTSettingFromEEPROM(){
-  //the order is: {qsid, qpass, broker, topic, mqttUser, mqttPass}
-  int addr = 0; //start from 0
-  int confirm = EEPROMReadInt(addr);
-  Serial.print("Confirmation number was:");
-  Serial.println(confirm);
-  if(confirm == CONFIRMATION_NUMBER){ //just to confirm that the eeprom isn't full of gibberish
-  addr += 2;
-  int length = EEPROMReadInt(addr);
-  addr += 2; //need to skip 2 positions that were used by the length int
-  if (length > 0){
-    wifiSsid = readStringFromEEPROM(addr, length);
-    addr += length;
-    length = EEPROMReadInt(addr);
-    addr += 2;
-    wifiPass = readStringFromEEPROM(addr, length);
-    addr += length;
-    length = EEPROMReadInt(addr);
-    addr += 2;
-    if (length > 0){
-      broker = readStringFromEEPROM(addr, length);
-      addr += length;
-      //now we get the topic
-      length = EEPROMReadInt(addr);
-      addr += 2;
-      if(length > 0){
-        topic = readStringFromEEPROM(addr, length);
-        addr += length;
-        //let's get the user and passoword
-        length = EEPROMReadInt(addr);
-        addr += 2;
-        mqttUser = readStringFromEEPROM(addr, length);
-        addr += length;
-        length = EEPROMReadInt(addr);
-        addr += 2;
-        mqttPassword = readStringFromEEPROM(addr, length);
-        return true;
-      }
-    }
-  }
-}
-return false;
+  EEPROMReadAnything(0, conf);
+  Serial.print("Confirmation number is: ");
+  Serial.println(conf.confirmation);
+  bool configurationsRead = (conf.confirmation == CONFIRMATION_NUMBER);
+  Serial.println(configurationsRead);
+  return configurationsRead;
 }
 
 String readStringFromEEPROM(int addr, int length){
@@ -141,7 +110,6 @@ bool testWifi(void) {
 void setupApplication() {
   if (mdns.begin(ssid, WiFi.localIP())) {
     Serial.println("\nMDNS responder started");
-    ;
   }
   pinMode(led, OUTPUT);
   delay(10);
@@ -150,14 +118,15 @@ void setupApplication() {
 }
 
 void connectToBroker() {
+  clientMQTT = PubSubClient(wclient, conf.broker);
   clientMQTT.set_callback(callback);
   uint8_t mac[6];
   WiFi.macAddress(mac);
   String clientID = "esp_" + macToStr(mac);
-  if (clientMQTT.connect(MQTT::Connect(clientID).set_auth(mqttUser, mqttPassword))) {
+  if (clientMQTT.connect(MQTT::Connect(clientID).set_auth(conf.mqttUser, conf.mqttPassword))) {
     Serial.println("connected to MQTT broker!");
     connectedToBroker = true;
-    clientMQTT.subscribe(topic);
+    clientMQTT.subscribe(conf.topic);
   }
 }
 
@@ -168,7 +137,7 @@ void setupAccessPoint(void) {
   int n = WiFi.scanNetworks();
   Serial.println("scan done");
   if (n == 0)
-    Serial.println("no networks found");
+  Serial.println("no networks found");
   else
   {
     Serial.print(n);
@@ -253,22 +222,35 @@ void handleDisplayAccessPoints() {
 }
 
 void handleSetAccessPoint() {
+  Serial.println("entered handleSetAccessPoint");
   int httpstatus = 200;
-  String qsid = decodeUrlText(server.arg("ssid"));
-  String qpass = decodeUrlText(server.arg("pass"));
-  String broker = decodeUrlText(server.arg("broker"));
-  String mqttTopic = decodeUrlText(server.arg("topic"));
-  String mqttUser = decodeUrlText(server.arg("user"));
-  String mqttPass = decodeUrlText(server.arg("mqttpass"));
-  if (qsid.length() > 0 && qpass.length() > 0) {
+  conf.confirmation = CONFIRMATION_NUMBER;
+  server.arg("ssid").toCharArray(conf.wifiSsid, DEVICE_CONF_ARRAY_LENGHT);
+  server.arg("pass").toCharArray(conf.wifiPass, DEVICE_CONF_ARRAY_LENGHT);
+  server.arg("broker").toCharArray(conf.broker, DEVICE_CONF_ARRAY_LENGHT);
+  server.arg("topic").toCharArray(conf.topic, DEVICE_CONF_ARRAY_LENGHT);
+  server.arg("user").toCharArray(conf.mqttUser, DEVICE_CONF_ARRAY_LENGHT);
+  server.arg("mqttpass").toCharArray(conf.mqttPassword, DEVICE_CONF_ARRAY_LENGHT);
+  Serial.println(conf.confirmation);
+  Serial.println(conf.wifiSsid);
+  Serial.println(conf.wifiPass);
+  Serial.println(conf.broker);
+  Serial.println(conf.topic);
+  Serial.println(conf.mqttUser);
+  Serial.println(conf.mqttPassword);
+  if (sizeof(conf.wifiSsid) > 0 && sizeof(conf.wifiPass) > 0) {
     WiFi.mode(WIFI_AP_STA);
     WiFi.persistent(false);
-    WiFi.begin(qsid.c_str(), qpass.c_str());
+    WiFi.begin(conf.wifiSsid, conf.wifiPass);
     if (testWifi()) {
       Serial.println("\nWifi Connection Success!");
-      if (broker.length() > 0 && mqttTopic.length() > 0) {
-        String mqttConfigs[] = {qsid, qpass, broker, mqttTopic, mqttUser, mqttPass};
-        saveStringsToEEPROM(mqttConfigs);
+      if (sizeof(conf.broker) > 0 && sizeof(conf.topic) > 0) {
+        Serial.println("clearing EEPROM...");
+        clearEEPROM();
+        Serial.println("writting EEPROM...");
+        EEPROMWriteAnything(0, conf);
+        EEPROM.commit();
+        Serial.println("Done! See you soon");
         delay(3000);
         abort();
       } else {
@@ -277,12 +259,14 @@ void handleSetAccessPoint() {
         httpstatus = 404;
       }
     } else {
+      Serial.println("Could not connect to this wifi");
       content = "<!DOCTYPE HTML>\n<html>";
       content += "Failed to connect to AP ";
-      content += qsid;
+      content += conf.wifiSsid;
       content += ", try again.</html>";
     }
   } else {
+    Serial.println("SSID or password not set");
     content = "<!DOCTYPE HTML><html>";
     content += "Error, no ssid or password set?</html>";
     //.println("Sending 404");
@@ -307,15 +291,19 @@ void handleNotFound() {
 }
 
 void loop() {
-  if (connectedToBroker) {
-    connectedToBroker = clientMQTT.loop();
-  } else {
-    if (testWifi()){
-      Serial.print("connection with broker lost!");
-      connectToBroker(); //reconnects to the broker
+  if(shouldRunLoop){
+    if (connectedToBroker) {
+      connectedToBroker = clientMQTT.loop();
     } else {
-      server.handleClient();  // In this example we're not doing too much
+      if (testWifi()){
+        Serial.print("connection with broker lost!");
+        connectToBroker(); //reconnects to the broker
+      } else {
+        server.handleClient();  // In this example we're not doing too much
+      }
     }
+  } else {
+    server.handleClient();  // In this example we're not doing too much
   }
 }
 
@@ -329,75 +317,10 @@ String macToStr(const uint8_t* mac) {
   return result;
 }
 
-//This function will write a 2 byte integer to the eeprom at the specified address and address + 1
-//returns the current address
-int EEPROMWriteInt(int p_address, int p_value)
-{
-  byte lowByte = ((p_value >> 0) & 0xFF);
-  byte highByte = ((p_value >> 8) & 0xFF);
-
-  EEPROM.write(p_address, lowByte);
-  p_address++;
-  EEPROM.write(p_address, highByte);
-  return p_address;
-}
-
-//This function will read a 2 byte integer from the eeprom at the specified address and address + 1
-unsigned int EEPROMReadInt(int p_address)
-{
-  byte lowByte = EEPROM.read(p_address);
-  byte highByte = EEPROM.read(p_address + 1);
-
-  return ((lowByte << 0) & 0xFF) + ((highByte << 8) & 0xFF00);
-}
-
-//Saves the string length to the first 2 bytes and then the string on the said size
-void saveStringsToEEPROM(String array[]) {
-  clearEEPROM();
-  int addr = 0;
-  addr = EEPROMWriteInt(addr, CONFIRMATION_NUMBER);
-  for (int i = 0; i < sizeof(array); i++){
-    String obj = array[i];
-    int size = obj.length();
-    addr = EEPROMWriteInt(addr, size);
-    for (int j = 0; j < obj.length(); j++) {
-      char c = obj.charAt(j);
-      EEPROM.write(++addr, c);
-    }
-  }
-  EEPROM.commit();
-  delay(100);
-}
-
 void clearEEPROM(){
   for (int i = 0; i < EEPROM_MAX_ADDRS; i++) {
     EEPROM.write(i, 0);
   }
   EEPROM.commit();
   delay(100);
-}
-
-//Decodes url paramters to a normal string
-String decodeUrlText(String param) {
-  param.replace("+"," ");
-  param.replace("%21","!");
-  param.replace("%23","#");
-  param.replace("%24","$");
-  param.replace("%26","&");
-  param.replace("%27","'");
-  param.replace("%28","(");
-  param.replace("%29",")");
-  param.replace("%2A","*");
-  param.replace("%2B","+");
-  param.replace("%2C",",");
-  param.replace("%2F","/");
-  param.replace("%3A",":");
-  param.replace("%3B",";");
-  param.replace("%3D","=");
-  param.replace("%3F","?");
-  param.replace("%40","@");
-  param.replace("%5B","[");
-  param.replace("%5D","]");
-
-  return param;
 }
