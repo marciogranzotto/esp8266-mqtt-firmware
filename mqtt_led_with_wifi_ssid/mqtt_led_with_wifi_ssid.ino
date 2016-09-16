@@ -15,7 +15,6 @@
 #define CONFIRMATION_NUMBER 42
 
 enum {
-  //  APPLICATION_WEBSERVER = 0,
   ACCESS_POINT_WEBSERVER
 };
 
@@ -213,7 +212,7 @@ void handleDisplayAccessPoints() {
   content += "<p><label>MQTT Broker URL or IP: </label><input name='broker'><p><label>MQTT Topic: </label><input name='topic'><p><label>MQTT User: </label><input name='user'><p><label>MQTT Password: </label><input type='password' name='mqttpass'>";
   content += "<p><input type='submit'></form>";
   content += "<p>We will attempt to connect to the selected AP and broker and reset if successful.";
-  content += "<p>Wait a bit and try to publish/subscribe to the selected topic";
+  content += "<p>Wait a bit and try to publish to the selected topic";
   content += "</html>";
   server.send(200, "text/html", content);
 }

@@ -1,5 +1,6 @@
 #include <ESP8266mDNS.h>
 
+#include <DHT.h>
 #include <MQTT.h>
 #include <PubSubClient.h>
 #include <EEPROM.h>
@@ -13,6 +14,7 @@
 
 #define EEPROM_MAX_ADDRS 512
 #define CONFIRMATION_NUMBER 42
+#define DHTTYPE DHT22 // Sensor type
 
 enum {
   ACCESS_POINT_WEBSERVER
@@ -25,18 +27,12 @@ const char* passphrase = "esp8266e";
 String st;
 String content;
 boolean connectedToBroker = false;
+String tempTopic;
+String humidTopic;
 
 DeviceConfiguration conf;
-int led = 2;
-
-void callback(const MQTT::Publish& pub) {
-  if (pub.payload_string().equals("on")) {
-    digitalWrite(led, HIGH);
-  };
-  if (pub.payload_string().equals("off")) {
-    digitalWrite(led, LOW);
-  };
-}
+int sensorPin = 2;
+DHT dht(sensorPin, DHTTYPE);
 
 WiFiClient wclient;
 PubSubClient clientMQTT(wclient, conf.broker);
@@ -107,7 +103,7 @@ void setupApplication() {
   if (mdns.begin(ssid, WiFi.localIP())) {
     Serial.println("\nMDNS responder started");
   }
-  pinMode(led, OUTPUT);
+  dht.begin();
   delay(10);
 
   connectToBroker();
@@ -115,14 +111,14 @@ void setupApplication() {
 
 void connectToBroker() {
   clientMQTT = PubSubClient(wclient, conf.broker);
-  clientMQTT.set_callback(callback);
   uint8_t mac[6];
   WiFi.macAddress(mac);
   String clientID = "esp_" + macToStr(mac);
   if (clientMQTT.connect(MQTT::Connect(clientID).set_auth(conf.mqttUser, conf.mqttPassword))) {
     Serial.println("connected to MQTT broker!");
     connectedToBroker = true;
-    clientMQTT.subscribe(conf.topic);
+    tempTopic = String(conf.topic) + "temp";
+    humidTopic = String(conf.topic) + "humid";
   }
 }
 
@@ -212,7 +208,7 @@ void handleDisplayAccessPoints() {
   content += "<p><label>MQTT Broker URL or IP: </label><input name='broker'><p><label>MQTT Topic: </label><input name='topic'><p><label>MQTT User: </label><input name='user'><p><label>MQTT Password: </label><input type='password' name='mqttpass'>";
   content += "<p><input type='submit'></form>";
   content += "<p>We will attempt to connect to the selected AP and broker and reset if successful.";
-  content += "<p>Wait a bit and try to publish/subscribe to the selected topic";
+  content += "<p>Wait a bit and try to subscribe to the selected topic";
   content += "</html>";
   server.send(200, "text/html", content);
 }
@@ -290,6 +286,12 @@ void loop() {
   if(shouldRunLoop){
     if (connectedToBroker) {
       connectedToBroker = clientMQTT.loop();
+
+      delay(10000);
+      readSensorAndPublishResults();
+
+      //TODO read from sensor and publish to the proper topic. For now:
+      clientMQTT.publish(conf.topic, "Hello World");
     } else {
       if (testWifi()){
         Serial.print("connection with broker lost!");
@@ -301,6 +303,24 @@ void loop() {
   } else {
     server.handleClient();  // In this example we're not doing too much
   }
+}
+
+void readSensorAndPublishResults() {
+  // Reading temperature or humidity takes about 250 milliseconds!
+  // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
+  float h = dht.readHumidity();
+  // Read temperature as Celsius (the default)
+  float t = dht.readTemperature();
+
+  String temperature = String(t, 1);
+  temperature += (char) 223; // degree symbol ( ° )
+  temperature += "C";
+
+  String humidity = String(h, 1);
+  humidity += "\045";
+
+  clientMQTT.publish(tempTopic, temperature);
+  clientMQTT.publish(humidTopic, humidity);
 }
 
 String macToStr(const uint8_t* mac) {
