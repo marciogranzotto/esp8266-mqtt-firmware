@@ -21,8 +21,7 @@ enum {
 
 MDNSResponder mdns;
 ESP8266WebServer server(80);
-const char* ssid = "";  // Use this as the ssid as well
-// as the mDNS name
+const char* ssid = "";
 const char* passphrase = "esp8266e";
 String st;
 String content;
@@ -50,8 +49,6 @@ void setup() {
   delay(5000);
   Serial.println("Yellow World");
   bool configurationsRead = readMQTTSettingFromEEPROM();
-  //  Serial.setDebugOutput(true);
-  //  WiFi.printDiag(Serial);
   if(configurationsRead){
     WiFi.mode(WIFI_STA);
     WiFi.persistent(false);

@@ -13,7 +13,7 @@ class DeviceConfiguration
     char broker[DEVICE_CONF_ARRAY_LENGHT]; //= "casa-granzotto.ddns.net"; //MQTT broker
     char topic[DEVICE_CONF_ARRAY_LENGHT]; //= "home/bedroom/led"; //MQTT topic
     char mqttUser[DEVICE_CONF_ARRAY_LENGHT]; // = "osmc";
-    char mqttPassword[DEVICE_CONF_ARRAY_LENGHT]; // = "84634959";
+    char mqttPassword[DEVICE_CONF_ARRAY_LENGHT]; // = "password1234";
     char wifiSsid[DEVICE_CONF_ARRAY_LENGHT];
     char wifiPass[DEVICE_CONF_ARRAY_LENGHT];
 };
