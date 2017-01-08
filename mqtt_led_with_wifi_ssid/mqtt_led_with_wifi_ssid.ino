@@ -9,6 +9,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WiFiMulti.h>
 #include <ESP8266WebServer.h>
+#include "DNSServer.h"
 #include <string.h>
 
 #define EEPROM_MAX_ADDRS 512
@@ -20,23 +21,27 @@ enum {
 
 MDNSResponder mdns;
 ESP8266WebServer server(80);
-const char* ssid = "";
+const char* ssid = "esp-config-mode";
 const char* passphrase = "esp8266e";
 String st;
 String content;
-boolean connectedToBroker = false;
 
 DeviceConfiguration conf;
-int led = 2;
+int actuatorPin = 2;
 
 void callback(const MQTT::Publish& pub) {
   if (pub.payload_string().equals("on")) {
-    digitalWrite(led, HIGH);
+    digitalWrite(actuatorPin, HIGH);
   };
   if (pub.payload_string().equals("off")) {
-    digitalWrite(led, LOW);
+    digitalWrite(actuatorPin, LOW);
   };
 }
+
+// DNS Server
+const byte DNS_PORT = 53;
+DNSServer dnsServer;
+IPAddress apIP(10, 10, 10, 1);
 
 WiFiClient wclient;
 PubSubClient clientMQTT(wclient, conf.broker);
@@ -48,7 +53,7 @@ void setup() {
   delay(5000);
   Serial.println("Yellow World");
   bool configurationsRead = readMQTTSettingFromEEPROM();
-  if(configurationsRead){
+  if (configurationsRead) {
     WiFi.mode(WIFI_STA);
     WiFi.persistent(false);
     WiFi.begin(conf.wifiSsid, conf.wifiPass);
@@ -60,13 +65,13 @@ void setup() {
       Serial.println("Could NOT connect. Starting on access point mode");
       setupAccessPoint(); // No WiFi or MQTT Settings yet, enter configuration mode
     }
-  }else {
+  } else {
     Serial.println("Could NOT read configurations. Starting on access point mode");
     setupAccessPoint(); // No WiFi or MQTT Settings yet, enter configuration mode
   }
 }
 
-boolean readMQTTSettingFromEEPROM(){
+boolean readMQTTSettingFromEEPROM() {
   EEPROMReadAnything(0, conf);
   Serial.print("Confirmation number is: ");
   Serial.println(conf.confirmation);
@@ -75,9 +80,9 @@ boolean readMQTTSettingFromEEPROM(){
   return configurationsRead;
 }
 
-String readStringFromEEPROM(int addr, int length){
+String readStringFromEEPROM(int addr, int length) {
   char array[length];
-  for(int i = 0; i < length; i++) {
+  for (int i = 0; i < length; i++) {
     addr += i;
     char c = char(EEPROM.read(addr));
     array[i] = c;
@@ -90,9 +95,10 @@ String readStringFromEEPROM(int addr, int length){
 
 bool testWifi(void) {
   int c = 0;
-  Serial.println("\nWaiting for Wifi to connect...");
+  Serial.println("\nTesting WiFi...");
   while ( c < 20 ) {
     if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("Wifi connected!");
       return true;
     }
     delay(500);
@@ -107,13 +113,13 @@ void setupApplication() {
   if (mdns.begin(ssid, WiFi.localIP())) {
     Serial.println("\nMDNS responder started");
   }
-  pinMode(led, OUTPUT);
+  pinMode(actuatorPin, OUTPUT);
   delay(10);
 
   connectToBroker();
 }
 
-void connectToBroker() {
+bool connectToBroker() {
   clientMQTT = PubSubClient(wclient, conf.broker);
   clientMQTT.set_callback(callback);
   uint8_t mac[6];
@@ -121,19 +127,26 @@ void connectToBroker() {
   String clientID = "esp_" + macToStr(mac);
   if (clientMQTT.connect(MQTT::Connect(clientID).set_auth(conf.mqttUser, conf.mqttPassword))) {
     Serial.println("connected to MQTT broker!");
-    connectedToBroker = true;
     clientMQTT.subscribe(conf.topic);
+    return true;
   }
+  return false;
 }
 
 void setupAccessPoint(void) {
+  Serial.println("setting wifi mode");
   WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("disconnecting");
+    WiFi.disconnect();
+  }
+  Serial.println("wating...");
   delay(100);
+  Serial.println("scanning...");
   int n = WiFi.scanNetworks();
   Serial.println("scan done");
   if (n == 0)
-  Serial.println("no networks found");
+    Serial.println("no networks found");
   else
   {
     Serial.print(n);
@@ -167,7 +180,8 @@ void setupAccessPoint(void) {
   st += "</ol>";
   delay(100);
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(ssid, passphrase, 6);
+  WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
+  WiFi.softAP(ssid);
   launchWeb(ACCESS_POINT_WEBSERVER);
 }
 
@@ -183,6 +197,8 @@ void launchWeb(int webservertype) {
   Serial.print("Server type ");
   Serial.print(webservertype);
   Serial.println(" started");
+  //Captive Portal
+  dnsServer.start(DNS_PORT, "*", apIP);
 }
 
 void setupWebServerHandlers(int webservertype) {
@@ -209,7 +225,7 @@ void handleDisplayAccessPoints() {
   content += st;
   content += "<p><form method='get' action='setap'>";
   content += "<label>SSID: </label><input name='ssid' length=32><label>Password: </label><input type='password' name='pass' length=64>";
-  content += "<p><label>MQTT Broker URL or IP: </label><input name='broker'><p><label>MQTT Topic: </label><input name='topic'><p><label>MQTT User: </label><input name='user'><p><label>MQTT Password: </label><input type='password' name='mqttpass'>";
+  content += "<p><label>MQTT Broker URL or IP: </label><input name='broker'><p><label>MQTT Topic: </label><input name='topic' placeholder='home/bedroom/outlet/0'><p><label>MQTT User: </label><input name='user'><p><label>MQTT Password: </label><input type='password' name='mqttpass'>";
   content += "<p><input type='submit'></form>";
   content += "<p>We will attempt to connect to the selected AP and broker and reset if successful.";
   content += "<p>Wait a bit and try to publish to the selected topic";
@@ -287,19 +303,18 @@ void handleNotFound() {
 }
 
 void loop() {
-  if(shouldRunLoop){
-    if (connectedToBroker) {
-      connectedToBroker = clientMQTT.loop();
-    } else {
-      if (testWifi()){
-        Serial.print("connection with broker lost!");
-        connectToBroker(); //reconnects to the broker
-      } else {
-        server.handleClient();  // In this example we're not doing too much
-      }
+  dnsServer.processNextRequest();
+  if (shouldRunLoop && testWifi()) {
+    if (!clientMQTT.connected()) { //needs to reconnect to the broker
+      Serial.println("connection with broker lost!");
+      connectToBroker();
+    }
+    if (clientMQTT.connected()) {
+      Serial.println("still conneted to the broker!");
+      clientMQTT.loop();
     }
   } else {
-    server.handleClient();  // In this example we're not doing too much
+    server.handleClient();
   }
 }
 
@@ -308,12 +323,12 @@ String macToStr(const uint8_t* mac) {
   for (int i = 0; i < 6; ++i) {
     result += String(mac[i], 16);
     if (i < 5)
-    result += ':';
+      result += ':';
   }
   return result;
 }
 
-void clearEEPROM(){
+void clearEEPROM() {
   for (int i = 0; i < EEPROM_MAX_ADDRS; i++) {
     EEPROM.write(i, 0);
   }
