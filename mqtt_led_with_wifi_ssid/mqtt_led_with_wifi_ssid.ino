@@ -27,16 +27,9 @@ String st;
 String content;
 
 DeviceConfiguration conf;
-int actuatorPin = 2;
-
-void callback(const MQTT::Publish& pub) {
-  if (pub.payload_string().equals("on")) {
-    digitalWrite(actuatorPin, HIGH);
-  };
-  if (pub.payload_string().equals("off")) {
-    digitalWrite(actuatorPin, LOW);
-  };
-}
+int actuatorPin = 5;
+int buttonPin = 4;
+bool currentState = false;
 
 // DNS Server
 const byte DNS_PORT = 53;
@@ -46,12 +39,52 @@ IPAddress apIP(10, 10, 10, 1);
 WiFiClient wclient;
 PubSubClient clientMQTT(wclient, conf.broker);
 bool shouldRunLoop = false;
+volatile bool shouldToggle = false;
+
+void callback(const MQTT::Publish& pub) {
+  if (pub.payload_string().equals("on")) {
+    currentState = true;
+  };
+  if (pub.payload_string().equals("off")) {
+    currentState = false;
+  };
+  digitalWrite(actuatorPin, currentState ? HIGH : LOW);
+}
+
+long debouncing_time = 200; //Debouncing Time in Milliseconds
+volatile unsigned long last_micros = 0;
+
+void debounceInterrupt() {
+  Serial.println("debounceInterrupt()");
+  if((long)(micros() - last_micros) >= debouncing_time * 1000) {
+    Interrupt();
+    last_micros = micros();
+  }
+}
+
+void Interrupt() {
+  Serial.println("Interrupt()");
+  shouldToggle = true;
+}
+
+void toggleState() {
+  String state = currentState ? "off" : "on";
+  currentState = !currentState;
+  digitalWrite(actuatorPin, currentState ? HIGH : LOW);
+  clientMQTT.publish(conf.topic, state);
+}
 
 void setup() {
   Serial.begin(115200);
   EEPROM.begin(EEPROM_MAX_ADDRS);
   delay(5000);
   Serial.println("Yellow World");
+  pinMode(buttonPin, INPUT);
+  if(digitalRead(buttonPin) == HIGH) {
+    Serial.println("Button pressed!!");
+    Serial.println("clearing EEPROM...");
+    clearEEPROM();
+  }
   bool configurationsRead = readMQTTSettingFromEEPROM();
   if (configurationsRead) {
     WiFi.mode(WIFI_STA);
@@ -114,6 +147,7 @@ void setupApplication() {
     Serial.println("\nMDNS responder started");
   }
   pinMode(actuatorPin, OUTPUT);
+  attachInterrupt(buttonPin, debounceInterrupt, RISING);
   delay(10);
 
   connectToBroker();
@@ -198,7 +232,7 @@ void launchWeb(int webservertype) {
   Serial.print(webservertype);
   Serial.println(" started");
   //Captive Portal
-  dnsServer.start(DNS_PORT, "*", apIP);
+  dnsServer.start(DNS_PORT, "config.me", apIP);
 }
 
 void setupWebServerHandlers(int webservertype) {
@@ -306,12 +340,17 @@ void loop() {
   dnsServer.processNextRequest();
   if (shouldRunLoop && testWifi()) {
     if (!clientMQTT.connected()) { //needs to reconnect to the broker
-      Serial.println("connection with broker lost!");
+      //Serial.println("connection with broker lost!");
       connectToBroker();
     }
     if (clientMQTT.connected()) {
-      Serial.println("still conneted to the broker!");
+      //Serial.println("still conneted to the broker!");
       clientMQTT.loop();
+      if (shouldToggle) {
+        shouldToggle = false;
+        toggleState();
+      }
+      delay(100);
     }
   } else {
     server.handleClient();
