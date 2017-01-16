@@ -11,9 +11,10 @@ class DeviceConfiguration
     DeviceConfiguration() {};
     int confirmation;
     char broker[DEVICE_CONF_ARRAY_LENGHT]; //= "casa-granzotto.ddns.net"; //MQTT broker
-    char topic[DEVICE_CONF_ARRAY_LENGHT]; //= "home/bedroom/outlet/1"; //MQTT topic
+    char topicTemperature[DEVICE_CONF_ARRAY_LENGHT]; //= "home/bedroom/temperature"; //MQTT topic
+    char topicHumidity[DEVICE_CONF_ARRAY_LENGHT]; //= "home/bedroom/humidity"; //MQTT topic
     char mqttUser[DEVICE_CONF_ARRAY_LENGHT]; // = "osmc";
-    char mqttPassword[DEVICE_CONF_ARRAY_LENGHT]; // = "password1234"; (actually not this one)
+    char mqttPassword[DEVICE_CONF_ARRAY_LENGHT]; // = "password1234"; (actualy not this one)
     char wifiSsid[DEVICE_CONF_ARRAY_LENGHT];
     char wifiPass[DEVICE_CONF_ARRAY_LENGHT];
 };

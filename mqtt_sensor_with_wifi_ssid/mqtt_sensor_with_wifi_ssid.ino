@@ -1,5 +1,6 @@
 #include <ESP8266mDNS.h>
 
+#include <DHT.h>
 #include <MQTT.h>
 #include <PubSubClient.h>
 #include <EEPROM.h>
@@ -14,6 +15,7 @@
 
 #define EEPROM_MAX_ADDRS 512
 #define CONFIRMATION_NUMBER 42
+#define DHTTYPE DHT22 // Sensor type
 
 enum {
   ACCESS_POINT_WEBSERVER
@@ -25,13 +27,15 @@ const char* ssid = "esp-config-mode";
 const char* passphrase = "esp8266e";
 String st;
 String content;
+String tempTopic;
+String humidTopic;
 
 DeviceConfiguration conf;
-int actuatorPin = 5;
-int buttonPin = 4;
-bool currentState = false;
+int sensorPin = 2;
+DHT dht(sensorPin, DHTTYPE);
+const int sleepTimeS = 60;
 
-// DNS Server
+// DNS server
 const byte DNS_PORT = 53;
 DNSServer dnsServer;
 IPAddress apIP(10, 10, 10, 1);
@@ -39,52 +43,12 @@ IPAddress apIP(10, 10, 10, 1);
 WiFiClient wclient;
 PubSubClient clientMQTT(wclient, conf.broker);
 bool shouldRunLoop = false;
-volatile bool shouldToggle = false;
-
-void callback(const MQTT::Publish& pub) {
-  if (pub.payload_string().equals("on")) {
-    currentState = true;
-  };
-  if (pub.payload_string().equals("off")) {
-    currentState = false;
-  };
-  digitalWrite(actuatorPin, currentState ? HIGH : LOW);
-}
-
-long debouncing_time = 200; //Debouncing Time in Milliseconds
-volatile unsigned long last_micros = 0;
-
-void debounceInterrupt() {
-  Serial.println("debounceInterrupt()");
-  if((long)(micros() - last_micros) >= debouncing_time * 1000) {
-    Interrupt();
-    last_micros = micros();
-  }
-}
-
-void Interrupt() {
-  Serial.println("Interrupt()");
-  shouldToggle = true;
-}
-
-void toggleState() {
-  String state = currentState ? "off" : "on";
-  currentState = !currentState;
-  digitalWrite(actuatorPin, currentState ? HIGH : LOW);
-  clientMQTT.publish(conf.topic, state);
-}
 
 void setup() {
   Serial.begin(115200);
   EEPROM.begin(EEPROM_MAX_ADDRS);
   delay(5000);
   Serial.println("Yellow World");
-  pinMode(buttonPin, INPUT);
-  if(digitalRead(buttonPin) == HIGH) {
-    Serial.println("Button pressed!!");
-    Serial.println("clearing EEPROM...");
-    clearEEPROM();
-  }
   bool configurationsRead = readMQTTSettingFromEEPROM();
   if (configurationsRead) {
     WiFi.mode(WIFI_STA);
@@ -146,8 +110,7 @@ void setupApplication() {
   if (mdns.begin(ssid, WiFi.localIP())) {
     Serial.println("\nMDNS responder started");
   }
-  pinMode(actuatorPin, OUTPUT);
-  attachInterrupt(buttonPin, debounceInterrupt, RISING);
+  dht.begin();
   delay(10);
 
   connectToBroker();
@@ -155,13 +118,13 @@ void setupApplication() {
 
 bool connectToBroker() {
   clientMQTT = PubSubClient(wclient, conf.broker);
-  clientMQTT.set_callback(callback);
   uint8_t mac[6];
   WiFi.macAddress(mac);
   String clientID = "esp_" + macToStr(mac);
   if (clientMQTT.connect(MQTT::Connect(clientID).set_auth(conf.mqttUser, conf.mqttPassword))) {
     Serial.println("connected to MQTT broker!");
-    clientMQTT.subscribe(conf.topic);
+    tempTopic = String(conf.topicTemperature);
+    humidTopic = String(conf.topicHumidity);
     return true;
   }
   return false;
@@ -170,13 +133,13 @@ bool connectToBroker() {
 void setupAccessPoint(void) {
   Serial.println("setting wifi mode");
   WiFi.mode(WIFI_STA);
+  Serial.println("disconnecting");
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("disconnecting");
     WiFi.disconnect();
   }
-  Serial.println("wating...");
+  Serial.println("waiting");
   delay(100);
-  Serial.println("scanning...");
+  Serial.println("scanning");
   int n = WiFi.scanNetworks();
   Serial.println("scan done");
   if (n == 0)
@@ -232,7 +195,7 @@ void launchWeb(int webservertype) {
   Serial.print(webservertype);
   Serial.println(" started");
   //Captive Portal
-  dnsServer.start(DNS_PORT, "config.me", apIP);
+  dnsServer.start(DNS_PORT, "*", apIP);
 }
 
 void setupWebServerHandlers(int webservertype) {
@@ -259,10 +222,10 @@ void handleDisplayAccessPoints() {
   content += st;
   content += "<p><form method='get' action='setap'>";
   content += "<label>SSID: </label><input name='ssid' length=32><label>Password: </label><input type='password' name='pass' length=64>";
-  content += "<p><label>MQTT Broker URL or IP: </label><input name='broker'><p><label>MQTT Topic: </label><input name='topic' placeholder='home/bedroom/outlet/0'><p><label>MQTT User: </label><input name='user'><p><label>MQTT Password: </label><input type='password' name='mqttpass'>";
+  content += "<p><label>MQTT Broker URL or IP: </label><input name='broker'><p><label>MQTT Temperature Topic: </label><input name='topicTemperature' placeholder='home/bedroom/temperature'><p><label>MQTT Humidity Topic: </label><input name='topicHumidity' placeholder='home/bedroom/humidity'><p><label>MQTT User: </label><input name='user'><p><label>MQTT Password: </label><input type='password' name='mqttpass'>";
   content += "<p><input type='submit'></form>";
   content += "<p>We will attempt to connect to the selected AP and broker and reset if successful.";
-  content += "<p>Wait a bit and try to publish to the selected topic";
+  content += "<p>Wait a bit and try to subscribe to the selected topic";
   content += "</html>";
   server.send(200, "text/html", content);
 }
@@ -274,14 +237,16 @@ void handleSetAccessPoint() {
   server.arg("ssid").toCharArray(conf.wifiSsid, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("pass").toCharArray(conf.wifiPass, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("broker").toCharArray(conf.broker, DEVICE_CONF_ARRAY_LENGHT);
-  server.arg("topic").toCharArray(conf.topic, DEVICE_CONF_ARRAY_LENGHT);
+  server.arg("topicTemperature").toCharArray(conf.topicTemperature, DEVICE_CONF_ARRAY_LENGHT);
+  server.arg("topicHumidity").toCharArray(conf.topicHumidity, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("user").toCharArray(conf.mqttUser, DEVICE_CONF_ARRAY_LENGHT);
   server.arg("mqttpass").toCharArray(conf.mqttPassword, DEVICE_CONF_ARRAY_LENGHT);
   Serial.println(conf.confirmation);
   Serial.println(conf.wifiSsid);
   Serial.println(conf.wifiPass);
   Serial.println(conf.broker);
-  Serial.println(conf.topic);
+  Serial.println(conf.topicTemperature);
+  Serial.println(conf.topicHumidity);
   Serial.println(conf.mqttUser);
   Serial.println(conf.mqttPassword);
   if (sizeof(conf.wifiSsid) > 0 && sizeof(conf.wifiPass) > 0) {
@@ -290,7 +255,7 @@ void handleSetAccessPoint() {
     WiFi.begin(conf.wifiSsid, conf.wifiPass);
     if (testWifi()) {
       Serial.println("\nWifi Connection Success!");
-      if (sizeof(conf.broker) > 0 && sizeof(conf.topic) > 0) {
+      if (sizeof(conf.broker) > 0 && sizeof(conf.topicTemperature) > 0 && sizeof(conf.topicHumidity) > 0) {
         Serial.println("clearing EEPROM...");
         clearEEPROM();
         Serial.println("writting EEPROM...");
@@ -338,22 +303,52 @@ void handleNotFound() {
 
 void loop() {
   dnsServer.processNextRequest();
-  if (shouldRunLoop && testWifi()) {
-    if (!clientMQTT.connected()) { //needs to reconnect to the broker
-      //Serial.println("connection with broker lost!");
-      connectToBroker();
-    }
-    if (clientMQTT.connected()) {
-      //Serial.println("still conneted to the broker!");
-      clientMQTT.loop();
-      if (shouldToggle) {
-        shouldToggle = false;
-        toggleState();
+  if (shouldRunLoop) {
+    if (testWifi()) {
+      if (!clientMQTT.connected()) { //reconnects to the broker
+        Serial.println("connection with broker lost!");
+        connectToBroker();
       }
-      delay(100);
+
+      if (clientMQTT.connected()) {
+        Serial.println("still connected to the broker!");
+        clientMQTT.loop();
+        readSensorAndPublishResults();
+        Serial.println("ESP8266 in sleep mode");
+        ESP.deepSleep(sleepTimeS * 1000000);
+      }
+    } else {
+      server.handleClient();  // In this example we're not doing too much
     }
   } else {
-    server.handleClient();
+    server.handleClient();  // In this example we're not doing too much
+  }
+}
+
+void readSensorAndPublishResults() {
+  // Reading temperature or humidity takes about 250 milliseconds!
+  // Sensor readings may also be up to 2 seconds 'old' (its a very slow sensor)
+  float h = dht.readHumidity();
+  // Read temperature as Celsius (the default)
+  float t = dht.readTemperature();
+  String temperature = String(t, 1);
+  String humidity = String(h, 1);
+  Serial.println("temperature " + temperature);
+  Serial.println("humidity " + humidity);
+  if (t == t) { //t is not NaN
+    temperature += "°C";
+    
+    MQTT::Publish pub(tempTopic, temperature);
+    pub.set_retain(true);
+    clientMQTT.publish(pub);
+  }
+
+  if (h == h) { //h is not NaN
+    humidity += "\045";
+    
+    MQTT::Publish pub(humidTopic, humidity);
+    pub.set_retain(true);
+    clientMQTT.publish(pub);
   }
 }
 
