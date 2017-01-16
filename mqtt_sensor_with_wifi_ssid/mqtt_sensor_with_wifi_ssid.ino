@@ -33,6 +33,7 @@ String humidTopic;
 DeviceConfiguration conf;
 int sensorPin = 2;
 DHT dht(sensorPin, DHTTYPE);
+const int sleepTimeS = 60;
 
 // DNS server
 const byte DNS_PORT = 53;
@@ -312,11 +313,9 @@ void loop() {
       if (clientMQTT.connected()) {
         Serial.println("still connected to the broker!");
         clientMQTT.loop();
-
-        delay(10000);
         readSensorAndPublishResults();
-
-        Serial.println("end of loop");
+        Serial.println("ESP8266 in sleep mode");
+        ESP.deepSleep(sleepTimeS * 1000000);
       }
     } else {
       server.handleClient();  // In this example we're not doing too much
@@ -338,12 +337,18 @@ void readSensorAndPublishResults() {
   Serial.println("humidity " + humidity);
   if (t == t) { //t is not NaN
     temperature += "°C";
-    clientMQTT.publish(tempTopic, temperature);
+    
+    MQTT::Publish pub(tempTopic, temperature);
+    pub.set_retain(true);
+    clientMQTT.publish(pub);
   }
 
   if (h == h) { //h is not NaN
     humidity += "\045";
-    clientMQTT.publish(humidTopic, humidity);
+    
+    MQTT::Publish pub(humidTopic, humidity);
+    pub.set_retain(true);
+    clientMQTT.publish(pub);
   }
 }
 
