@@ -51,12 +51,12 @@ void callback(const MQTT::Publish& pub) {
   digitalWrite(actuatorPin, currentState ? HIGH : LOW);
 }
 
-long debouncing_time = 200; //Debouncing Time in Milliseconds
-volatile unsigned long last_micros = 0;
+unsigned long debouncing_time = 350UL; //Debouncing Time in Milliseconds
+volatile unsigned long last_micros = 0UL;
 
 void debounceInterrupt() {
   Serial.println("debounceInterrupt()");
-  if((long)(micros() - last_micros) >= debouncing_time * 1000) {
+  if((unsigned long)(micros() - last_micros) >= debouncing_time * 1000UL) {
     Interrupt();
     last_micros = micros();
   }
