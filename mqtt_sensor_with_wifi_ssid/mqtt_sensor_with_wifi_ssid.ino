@@ -43,11 +43,15 @@ IPAddress apIP(10, 10, 10, 1);
 WiFiClient wclient;
 PubSubClient clientMQTT(wclient, conf.broker);
 bool shouldRunLoop = false;
+unsigned long initialTime = 0UL;
 
 void setup() {
+  initialTime = micros();
   Serial.begin(115200);
   EEPROM.begin(EEPROM_MAX_ADDRS);
   delay(5000);
+  Serial.println(micros() - initialTime); //1
+  initialTime = micros();
   Serial.println("Yellow World");
   bool configurationsRead = readMQTTSettingFromEEPROM();
   if (configurationsRead) {
@@ -55,6 +59,8 @@ void setup() {
     WiFi.persistent(false);
     WiFi.begin(conf.wifiSsid, conf.wifiPass);
     if (testWifi()) {
+      Serial.println(micros() - initialTime); //2
+      initialTime = micros();
       Serial.println("Could connect and read MQTT Settings. Starting on application mode");
       setupApplication(); // WiFi established, setup application
       shouldRunLoop = true;
@@ -302,18 +308,28 @@ void handleNotFound() {
 }
 
 void loop() {
+  Serial.println(micros() - initialTime); //3
+  initialTime = micros();
+  Serial.println("loop()");
   dnsServer.processNextRequest();
   if (shouldRunLoop) {
     if (testWifi()) {
+      Serial.println(micros() - initialTime); //4
+      initialTime = micros();
+      Serial.println("Wifi connected.");
       if (!clientMQTT.connected()) { //reconnects to the broker
         Serial.println("connection with broker lost!");
         connectToBroker();
       }
 
       if (clientMQTT.connected()) {
+        Serial.println(micros() - initialTime); //5
+        initialTime = micros();
         Serial.println("still connected to the broker!");
         clientMQTT.loop();
         readSensorAndPublishResults();
+        Serial.println(micros() - initialTime); //6
+        initialTime = micros();
         Serial.println("ESP8266 in sleep mode");
         ESP.deepSleep(sleepTimeS * 1000000);
       }
