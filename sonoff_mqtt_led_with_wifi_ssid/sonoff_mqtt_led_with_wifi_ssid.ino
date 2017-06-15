@@ -350,6 +350,7 @@ void loop() {
     if (clientMQTT.connected()) {
       //Serial.println("still conneted to the broker!");
       clientMQTT.loop();
+      digitalWrite(ledPin, HIGH);
       if (shouldToggle) {
         shouldToggle = false;
         toggleState();
