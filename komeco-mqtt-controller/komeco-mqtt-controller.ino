@@ -1,5 +1,4 @@
 #include <ESP8266mDNS.h>
-
 #include <MQTT.h>
 #include <PubSubClient.h>
 #include <EEPROM.h>
@@ -11,9 +10,11 @@
 #include <ESP8266WebServer.h>
 #include <DNSServer.h>
 #include <string.h>
+#include "komeco.h"
 
 #define EEPROM_MAX_ADDRS 512
 #define CONFIRMATION_NUMBER 42
+#define DEFAULT_TEMPERATURE 22
 
 enum {
   ACCESS_POINT_WEBSERVER
@@ -21,14 +22,15 @@ enum {
 
 MDNSResponder mdns;
 ESP8266WebServer server(80);
-const char* ssid = "esp-config-mode";
+const char* ssid = "esp-config-";
 const char* passphrase = "esp8266e";
 String st;
 String content;
 
+KomecoController komeco;
+
 DeviceConfiguration conf;
-int actuatorPin = 12;
-int ledPin = 13;
+int IRLedPin = 2;
 int buttonPin = 0;
 bool currentState = false;
 
@@ -43,13 +45,22 @@ bool shouldRunLoop = false;
 volatile bool shouldToggle = false;
 
 void callback(const MQTT::Publish& pub) {
-  if (pub.payload_string().equals("on")) {
-    currentState = true;
+  String payload = pub.payload_string();
+  Serial.println(payload);
+  if (payload.equals("on")) {
+    komeco.setTemperatureTo(DEFAULT_TEMPERATURE);
+  } else if (payload.equals("off")) {
+    komeco.turnOff();
+  } else if (payload.toInt() >= 16) {
+    komeco.setTemperatureTo(payload.toInt());
+  } else if (payload.equals("auto")) {
+    komeco.setModeToAuto();
+  } else if (payload.equals("heat")) {
+    komeco.setModeToHeat();
+  } else if (payload.equals("cool")) {
+    komeco.setModeToCool();
   };
-  if (pub.payload_string().equals("off")) {
-    currentState = false;
-  };
-  digitalWrite(actuatorPin, currentState ? HIGH : LOW);
+  // digitalWrite(actuatorPin, currentState ? HIGH : LOW);
 }
 
 long debouncing_time = 200; //Debouncing Time in Milliseconds
@@ -72,18 +83,23 @@ void Interrupt() {
 void toggleState() {
   String state = currentState ? "off" : "on";
   currentState = !currentState;
-  digitalWrite(actuatorPin, currentState ? HIGH : LOW);
-  clientMQTT.publish(conf.topic, state);
+  if (currentState) {
+    komeco.setTemperatureTo(DEFAULT_TEMPERATURE);
+  } else {
+    komeco.turnOff();
+  };
+  // clientMQTT.publish(conf.topic, state);
 }
 
-void setup() {
+void setup() {;
   Serial.begin(115200);
   EEPROM.begin(EEPROM_MAX_ADDRS);
   delay(5000);
   Serial.println("Yellow World");
   pinMode(buttonPin, INPUT);
-  pinMode(ledPin, OUTPUT);
-  digitalWrite(ledPin, HIGH);
+  pinMode(IRLedPin, OUTPUT);
+  digitalWrite(IRLedPin, LOW);
+  delay(5000);
   if(digitalRead(buttonPin) == LOW) {
     Serial.println("Button pressed!!");
     Serial.println("clearing EEPROM...");
@@ -133,7 +149,7 @@ String readStringFromEEPROM(int addr, int length) {
 bool testWifi(void) {
   int c = 0;
   Serial.println("\nTesting WiFi...");
-  while ( c < 20 ) {
+  while ( c < 50 ) {
     if (WiFi.status() == WL_CONNECTED) {
       Serial.println("Wifi connected!");
       return true;
@@ -150,10 +166,9 @@ void setupApplication() {
   if (mdns.begin(ssid, WiFi.localIP())) {
     Serial.println("\nMDNS responder started");
   }
-  pinMode(actuatorPin, OUTPUT);
   attachInterrupt(buttonPin, debounceInterrupt, RISING);
   delay(10);
-
+  komeco.setup();
   connectToBroker();
 }
 
@@ -219,7 +234,9 @@ void setupAccessPoint(void) {
   delay(100);
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
-  WiFi.softAP(ssid);
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  WiFi.softAP((ssid + lastDigitsMacAddress(mac)).c_str());
   launchWeb(ACCESS_POINT_WEBSERVER);
 }
 
@@ -344,13 +361,12 @@ void loop() {
   dnsServer.processNextRequest();
   if (shouldRunLoop && testWifi()) {
     if (!clientMQTT.connected()) { //needs to reconnect to the broker
-      //Serial.println("connection with broker lost!");
+      Serial.println("connection with broker lost!");
       connectToBroker();
     }
     if (clientMQTT.connected()) {
-      //Serial.println("still conneted to the broker!");
+      Serial.println("still conneted to the broker!");
       clientMQTT.loop();
-      digitalWrite(ledPin, HIGH);
       if (shouldToggle) {
         shouldToggle = false;
         toggleState();
@@ -358,7 +374,6 @@ void loop() {
       delay(100);
     }
   } else {
-    digitalWrite(ledPin, LOW);
     if (settingsTime == 0) {
       settingsTime = micros();
     }
@@ -380,6 +395,11 @@ String macToStr(const uint8_t* mac) {
       result += ':';
   }
   return result;
+}
+
+String lastDigitsMacAddress(const uint8_t* mac) {
+  String result = macToStr(mac);
+  return result.substring( result.length() - 5 );
 }
 
 void clearEEPROM() {
