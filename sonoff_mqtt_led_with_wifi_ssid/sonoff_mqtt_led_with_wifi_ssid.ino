@@ -1,6 +1,5 @@
 #include <ESP8266mDNS.h>
 
-#include <MQTT.h>
 #include <PubSubClient.h>
 #include <EEPROM.h>
 #include "EEPROMAnything.h"
@@ -11,9 +10,16 @@
 #include <ESP8266WebServer.h>
 #include <DNSServer.h>
 #include <string.h>
+#include <ArduinoOTA.h>
 
 #define EEPROM_MAX_ADDRS 512
 #define CONFIRMATION_NUMBER 42
+
+#define MQTT_BROKER_PORT 1883
+
+#define OTA_PASS "UPDATE_PW"
+#define OTA_HOSTNAME "wall-switch"
+#define OTA_PORT 8266
 
 enum {
   ACCESS_POINT_WEBSERVER
@@ -38,18 +44,23 @@ DNSServer dnsServer;
 IPAddress apIP(10, 10, 10, 1);
 
 WiFiClient wclient;
-PubSubClient clientMQTT(wclient, conf.broker);
+PubSubClient clientMQTT;
 bool shouldRunLoop = false;
 volatile bool shouldToggle = false;
 
-void callback(const MQTT::Publish& pub) {
-  if (pub.payload_string().equals("on")) {
-    currentState = true;
-  };
-  if (pub.payload_string().equals("off")) {
+void callback(char* topic, byte* payload, unsigned int length) {
+  Serial.print("Topic is: ");
+  Serial.println(topic);
+  if ((char) payload[0] == '0' || strncasecmp_P((char *)payload, "off", length) == 0) {
     currentState = false;
-  };
-  digitalWrite(actuatorPin, currentState ? HIGH : LOW);
+    digitalWrite(actuatorPin, LOW);
+  } else if ((char)payload[0] == '1' || strncasecmp_P((char *)payload, "on", length) == 0) {
+    currentState = true;    
+    digitalWrite(actuatorPin, HIGH);
+  } else if (strncasecmp_P((char *)payload, "reset", length) == 0) {
+    clearEEPROM();
+    ESP.restart();
+  }
 }
 
 long debouncing_time = 200; //Debouncing Time in Milliseconds
@@ -70,11 +81,14 @@ void Interrupt() {
 }
 
 void toggleState() {
-  String state = currentState ? "off" : "on";
+  const char* state = currentState ? "off" : "on";
   currentState = !currentState;
   digitalWrite(actuatorPin, currentState ? HIGH : LOW);
-  clientMQTT.publish(conf.topic, state);
+  if (clientMQTT.connected()) {
+    clientMQTT.publish(conf.topic, state);
+  }
 }
+
 
 void setup() {
   Serial.begin(115200);
@@ -106,6 +120,7 @@ void setup() {
     Serial.println("Could NOT read configurations. Starting on access point mode");
     setupAccessPoint(); // No WiFi or MQTT Settings yet, enter configuration mode
   }
+  setupOTA();
 }
 
 boolean readMQTTSettingFromEEPROM() {
@@ -132,10 +147,8 @@ String readStringFromEEPROM(int addr, int length) {
 
 bool testWifi(void) {
   int c = 0;
-  Serial.println("\nTesting WiFi...");
   while ( c < 20 ) {
     if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("Wifi connected!");
       return true;
     }
     delay(500);
@@ -158,18 +171,28 @@ void setupApplication() {
 }
 
 bool connectToBroker() {
-  clientMQTT = PubSubClient(wclient, conf.broker);
-  clientMQTT.set_callback(callback);
+  clientMQTT = PubSubClient(wclient);
+  clientMQTT.setServer(conf.broker, MQTT_BROKER_PORT);
+  clientMQTT.setCallback(callback);
   uint8_t mac[6];
   WiFi.macAddress(mac);
   String clientID = "esp_" + macToStr(mac);
-  if (clientMQTT.connect(MQTT::Connect(clientID).set_auth(conf.mqttUser, conf.mqttPassword))) {
+  if (clientMQTT.connect(clientID.c_str(), conf.mqttUser, conf.mqttPassword)) {
     Serial.println("connected to MQTT broker!");
     clientMQTT.subscribe(conf.topic);
     return true;
   }
   return false;
 }
+
+void setupOTA() {
+  ArduinoOTA.setPort(OTA_PORT);
+  ArduinoOTA.setHostname(OTA_HOSTNAME);
+  ArduinoOTA.setPassword(OTA_PASS);
+  ArduinoOTA.begin();
+  Serial.println("Starting OTA");
+}
+
 
 void setupAccessPoint(void) {
   Serial.println("setting wifi mode");
@@ -219,7 +242,7 @@ void setupAccessPoint(void) {
   delay(100);
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
-  WiFi.softAP(ssid);
+  WiFi.softAP(ssid, passphrase);
   launchWeb(ACCESS_POINT_WEBSERVER);
 }
 
@@ -350,10 +373,6 @@ void loop() {
     if (clientMQTT.connected()) {
       //Serial.println("still conneted to the broker!");
       clientMQTT.loop();
-      if (shouldToggle) {
-        shouldToggle = false;
-        toggleState();
-      }
       delay(100);
     }
   } else {
@@ -369,6 +388,11 @@ void loop() {
     }
     server.handleClient();
   }
+  if (shouldToggle) {
+    shouldToggle = false;
+    toggleState();
+  }
+  ArduinoOTA.handle();
 }
 
 String macToStr(const uint8_t* mac) {
