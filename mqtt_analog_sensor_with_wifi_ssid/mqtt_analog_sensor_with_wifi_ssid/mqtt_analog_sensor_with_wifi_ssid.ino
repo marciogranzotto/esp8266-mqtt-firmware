@@ -30,6 +30,7 @@ String humidTopic;
 DeviceConfiguration conf;
 const int sensorPin = A0;
 const int sleepTimeS = 60;
+int ledPin = LED_BUILTIN;
 
 // DNS server
 const byte DNS_PORT = 53;
@@ -39,6 +40,8 @@ IPAddress apIP(10, 10, 10, 1);
 WiFiClient wclient;
 PubSubClient clientMQTT(wclient, conf.broker);
 bool shouldRunLoop = false;
+
+volatile unsigned long settingsTime = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -295,8 +298,7 @@ void handleNotFound() {
 
 void loop() {
   dnsServer.processNextRequest();
-  if (shouldRunLoop) {
-    if (testWifi()) {
+  if (shouldRunLoop && testWifi()) {
       if (!clientMQTT.connected()) { //reconnects to the broker
         Serial.println("connection with broker lost!");
         connectToBroker();
@@ -309,10 +311,16 @@ void loop() {
         Serial.println("ESP8266 in sleep mode");
         ESP.deepSleep(sleepTimeS * 1000000);
       }
-    } else {
-      server.handleClient();  // In this example we're not doing too much
-    }
-  } else {
+  } else {digitalWrite(ledPin, LOW);
+  if (settingsTime == 0) {
+    settingsTime = micros();
+  }
+
+  if (micros() - settingsTime > 600000000) { //wait for 10m
+    Serial.println("Watchdog: 10 minutes stuck on config mode. Restarting!");
+    delay(1000);
+    ESP.restart();
+  }
     server.handleClient();  // In this example we're not doing too much
   }
 }

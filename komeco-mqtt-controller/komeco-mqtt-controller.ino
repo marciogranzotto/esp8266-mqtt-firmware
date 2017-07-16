@@ -1,5 +1,4 @@
 #include <ESP8266mDNS.h>
-
 #include <PubSubClient.h>
 #include <EEPROM.h>
 #include "EEPROMAnything.h"
@@ -10,15 +9,17 @@
 #include <ESP8266WebServer.h>
 #include <DNSServer.h>
 #include <string.h>
+#include "komeco.h"
 #include <ArduinoOTA.h>
 
 #define EEPROM_MAX_ADDRS 512
 #define CONFIRMATION_NUMBER 42
+#define DEFAULT_TEMPERATURE 22
 
 #define MQTT_BROKER_PORT 1883
 
 #define OTA_PASS "update"
-#define OTA_HOSTNAME "wall-switch"
+#define OTA_HOSTNAME "air-conditioner"
 #define OTA_PORT 8266
 
 enum {
@@ -32,13 +33,12 @@ const char* passphrase = "esp8266e";
 String st;
 String content;
 
+KomecoController komeco;
+
 DeviceConfiguration conf;
-int actuatorPin = 12;
-int ledPin = 13;
-int buttonPin = 0;
 bool currentState = false;
 
-// DNS Server
+// DNS Server 
 const byte DNS_PORT = 53;
 DNSServer dnsServer;
 IPAddress apIP(10, 10, 10, 1);
@@ -46,74 +46,59 @@ IPAddress apIP(10, 10, 10, 1);
 WiFiClient wclient;
 PubSubClient clientMQTT;
 bool shouldRunLoop = false;
-volatile bool shouldToggle = false;
 
 void callback(char* topic, byte* payload, unsigned int length) {
-	Serial.print("Topic is: ");
-	Serial.println(topic);
-	if ((char) payload[0] == '0' || strncasecmp_P((char *)payload, "off", length) == 0) {
-		currentState = false;
-		digitalWrite(actuatorPin, LOW);
-	} else if ((char)payload[0] == '1' || strncasecmp_P((char *)payload, "on", length) == 0) {
-		currentState = true;    
-		digitalWrite(actuatorPin, HIGH);
-	} else if (strncasecmp_P((char *)payload, "reset", length) == 0) {
-		clearEEPROM();
-		ESP.restart();
-	} else if (strncasecmp_P((char *)payload, "reboot", length) == 0) {
-		ESP.restart();
-	}
-}
-
-volatile unsigned long settingsTime = 0;
-volatile unsigned long millisSinceChange = 0;
-
-
-void debounceInterrupt() {
-	Serial.println("debounceInterrupt()");
-	if (digitalRead(0) == 1) {
-    if (millis() - millisSinceChange > 10000) {
-      clearEEPROM();
-      ESP.restart();
-    } else if (millis() - millisSinceChange > 50){
-			Interrupt();
-		}
-	}
-	millisSinceChange = millis();
-}
-
-void Interrupt() {
-  Serial.println("Interrupt()");
-  shouldToggle = true;
-}
-
-void toggleState() {
-  const char* state = currentState ? "off" : "on";
-  currentState = !currentState;
-  digitalWrite(actuatorPin, currentState ? HIGH : LOW);
-  if (clientMQTT.connected()) {
-    clientMQTT.publish(conf.topic, state);
+  Serial.print("Topic is: ");
+  Serial.println(topic);
+  String stringPayload = String((char*)payload);
+  if ((char) payload[0] == '0' || strncasecmp_P((char *)payload, "off", length) == 0) {
+      komeco.turnOff();
+      Serial.println("Turning off");
+  } else if ((char)payload[0] == '1' || strncasecmp_P((char *)payload, "on", length) == 0) {
+      komeco.setTemperatureTo(DEFAULT_TEMPERATURE);
+      Serial.println("Turning on");
+  } else if (stringPayload.toInt() >= 16) {
+      komeco.setTemperatureTo(stringPayload.toInt());
+      Serial.print("Setting temperature to");
+      Serial.println(stringPayload);
+  } else if (strncasecmp_P((char *)payload, "reset", length) == 0) {
+//    clearEEPROM();
+//    ESP.restart();
+  } else if (strncasecmp_P((char *)payload, "reboot", length) == 0) {
+//    ESP.restart();
   }
 }
 
+//void callback(const MQTT::Publish& pub) {
+//  String payload = pub.payload_string();
+//  Serial.println(payload);
+//  if (payload.equals("on")) {
+//    komeco.setTemperatureTo(DEFAULT_TEMPERATURE);
+//  } else if (payload.equals("off")) {
+//    komeco.turnOff();
+//  } else if (payload.toInt() >= 16) {
+//    komeco.setTemperatureTo(payload.toInt());
+//  } else if (payload.equals("auto")) {
+//    komeco.setModeToAuto();
+//  } else if (payload.equals("heat")) {
+//    komeco.setModeToHeat();
+//  } else if (payload.equals("cool")) {
+//    komeco.setModeToCool();
+//  };
+//  // digitalWrite(actuatorPin, currentState ? HIGH : LOW);
+//}
 
-void setup() {
+volatile unsigned long last_micros = 0;
+volatile unsigned long settingsTime = 0;
+
+void setup() {;
   Serial.begin(115200);
   EEPROM.begin(EEPROM_MAX_ADDRS);
   delay(5000);
   Serial.println("Yellow World");
-  pinMode(buttonPin, INPUT);
-  pinMode(ledPin, OUTPUT);
-  digitalWrite(ledPin, HIGH);
+  delay(5000);
   setupOTA();
-
-  if(digitalRead(buttonPin) == LOW) {
-    Serial.println("Button pressed!!");
-    Serial.println("clearing EEPROM...");
-  }
-
-  attachInterrupt(digitalPinToInterrupt(buttonPin), debounceInterrupt, CHANGE);
-
+  
   bool configurationsRead = readMQTTSettingFromEEPROM();
   if (configurationsRead) {
     WiFi.mode(WIFI_STA);
@@ -131,6 +116,14 @@ void setup() {
     Serial.println("Could NOT read configurations. Starting on access point mode");
     setupAccessPoint(); // No WiFi or MQTT Settings yet, enter configuration mode
   }
+}
+
+void setupOTA() {
+  ArduinoOTA.setPort(OTA_PORT);
+  ArduinoOTA.setHostname(OTA_HOSTNAME);
+  ArduinoOTA.setPassword(OTA_PASS);
+  ArduinoOTA.begin();
+  Serial.println("Starting OTA");
 }
 
 boolean readMQTTSettingFromEEPROM() {
@@ -157,7 +150,7 @@ String readStringFromEEPROM(int addr, int length) {
 
 bool testWifi(void) {
   int c = 0;
-  while ( c < 20 ) {
+  while ( c < 50 ) {
     if (WiFi.status() == WL_CONNECTED) {
       return true;
     }
@@ -173,9 +166,8 @@ void setupApplication() {
   if (mdns.begin(ssid, WiFi.localIP())) {
     Serial.println("\nMDNS responder started");
   }
-  pinMode(actuatorPin, OUTPUT);
   delay(10);
-
+  komeco.setup();
   connectToBroker();
 }
 
@@ -193,15 +185,6 @@ bool connectToBroker() {
   }
   return false;
 }
-
-void setupOTA() {
-  ArduinoOTA.setPort(OTA_PORT);
-  ArduinoOTA.setHostname(OTA_HOSTNAME);
-  ArduinoOTA.setPassword(OTA_PASS);
-  ArduinoOTA.begin();
-  Serial.println("Starting OTA");
-}
-
 
 void setupAccessPoint(void) {
   Serial.println("setting wifi mode");
@@ -235,18 +218,19 @@ void setupAccessPoint(void) {
     }
   }
   Serial.println("");
+
   delay(100);
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
   uint8_t mac[6];
   WiFi.macAddress(mac);
-  WiFi.softAP((ssid + lastDigitsMacAddress(mac)).c_str(), passphrase);
+  WiFi.softAP((ssid + lastDigitsMacAddress(mac)).c_str());
   launchWeb(ACCESS_POINT_WEBSERVER);
 }
 
 void fetchNetworks() {
-  int n = WiFi.scanNetworks();
   st = "<ol>";
+  int n = WiFi.scanNetworks();
   for (int i = 0; i < n; ++i)
   {
     // Print SSID and RSSI for each network found
@@ -286,11 +270,11 @@ void setupWebServerHandlers(int webservertype) {
 }
 
 void handleDisplayAccessPoints() {
-  fetchNetworks();
   IPAddress ip = WiFi.softAPIP();
   String ipStr = String(ip[0]) + '.' + String(ip[1]) + '.' + String(ip[2]) + '.' + String(ip[3]);
   uint8_t mac[6];
   WiFi.macAddress(mac);
+  fetchNetworks();
   String macStr = macToStr(mac);
   content = "<!DOCTYPE HTML>\n<html>Hello from ";
   content += ssid;
@@ -381,26 +365,17 @@ void handleNotFound() {
 
 void loop() {
   dnsServer.processNextRequest();
-
-  if (shouldToggle) {
-    shouldToggle = false;
-    toggleState();
-  }
-
   ArduinoOTA.handle();
   if (shouldRunLoop && testWifi()) {
     if (!clientMQTT.connected()) { //needs to reconnect to the broker
-      //Serial.println("connection with broker lost!");
+      Serial.println("connection with broker lost!");
       connectToBroker();
     }
     if (clientMQTT.connected()) {
-      //Serial.println("still conneted to the broker!");
       clientMQTT.loop();
-      digitalWrite(ledPin, HIGH);
       delay(100);
     }
   } else {
-    digitalWrite(ledPin, LOW);
     if (settingsTime == 0) {
       settingsTime = micros();
     }
@@ -425,10 +400,9 @@ String macToStr(const uint8_t* mac) {
 }
 
 String lastDigitsMacAddress(const uint8_t* mac) {
-    String result = macToStr(mac);
-    return result.substring( result.length() - 5 );
+  String result = macToStr(mac);
+  return result.substring( result.length() - 5 );
 }
-
 
 void clearEEPROM() {
   for (int i = 0; i < EEPROM_MAX_ADDRS; i++) {
