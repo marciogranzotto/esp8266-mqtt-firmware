@@ -18,7 +18,7 @@
 #define MQTT_BROKER_PORT 1883
 
 #define OTA_PASS "update"
-#define OTA_HOSTNAME "wall-switch"
+#define OTA_HOSTNAME "table-lamp"
 #define OTA_PORT 8266
 
 enum {
@@ -106,11 +106,6 @@ void setup() {
   pinMode(ledPin, OUTPUT);
   digitalWrite(ledPin, HIGH);
   setupOTA();
-
-  if(digitalRead(buttonPin) == LOW) {
-    Serial.println("Button pressed!!");
-    Serial.println("clearing EEPROM...");
-  }
 
   attachInterrupt(digitalPinToInterrupt(buttonPin), debounceInterrupt, CHANGE);
 

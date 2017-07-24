@@ -62,10 +62,10 @@ void callback(char* topic, byte* payload, unsigned int length) {
       Serial.print("Setting temperature to");
       Serial.println(stringPayload);
   } else if (strncasecmp_P((char *)payload, "reset", length) == 0) {
-//    clearEEPROM();
-//    ESP.restart();
+    clearEEPROM();
+    ESP.restart();
   } else if (strncasecmp_P((char *)payload, "reboot", length) == 0) {
-//    ESP.restart();
+    ESP.restart();
   }
 }
 
