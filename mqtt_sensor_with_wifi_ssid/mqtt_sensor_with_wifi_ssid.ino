@@ -10,7 +10,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266WiFiMulti.h>
 #include <ESP8266WebServer.h>
-#include "DNSServer.h"
+#include <DNSServer.h>
 #include <string.h>
 
 #define EEPROM_MAX_ADDRS 512
@@ -43,6 +43,8 @@ IPAddress apIP(10, 10, 10, 1);
 WiFiClient wclient;
 PubSubClient clientMQTT(wclient, conf.broker);
 bool shouldRunLoop = false;
+
+volatile unsigned long settingsTime = 0;
 
 void setup() {
   Serial.begin(115200);
@@ -178,7 +180,9 @@ void setupAccessPoint(void) {
   delay(100);
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
-  WiFi.softAP(ssid);
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  WiFi.softAP((ssid + lastDigitsMacAddress(mac)).c_str());
   launchWeb(ACCESS_POINT_WEBSERVER);
 }
 
@@ -263,7 +267,7 @@ void handleSetAccessPoint() {
         EEPROM.commit();
         Serial.println("Done! See you soon");
         delay(3000);
-        abort();
+        ESP.restart();
       } else {
         content = "<!DOCTYPE HTML>\n<html>No broker or topic setted, please try again.</html>";
         Serial.println("Sending 404");
@@ -303,8 +307,7 @@ void handleNotFound() {
 
 void loop() {
   dnsServer.processNextRequest();
-  if (shouldRunLoop) {
-    if (testWifi()) {
+  if (shouldRunLoop && testWifi()) {
       if (!clientMQTT.connected()) { //reconnects to the broker
         Serial.println("connection with broker lost!");
         connectToBroker();
@@ -317,10 +320,16 @@ void loop() {
         Serial.println("ESP8266 in sleep mode");
         ESP.deepSleep(sleepTimeS * 1000000);
       }
-    } else {
-      server.handleClient();  // In this example we're not doing too much
-    }
   } else {
+    if (settingsTime == 0) {
+      settingsTime = micros();
+    }
+
+    if (micros() - settingsTime > 600000000) { //wait for 10m
+      Serial.println("Watchdog: 10 minutes stuck on config mode. Restarting!");
+      delay(1000);
+      ESP.restart();
+    }
     server.handleClient();  // In this example we're not doing too much
   }
 }
@@ -337,7 +346,7 @@ void readSensorAndPublishResults() {
   Serial.println("humidity " + humidity);
   if (t == t) { //t is not NaN
     temperature += "°C";
-    
+
     MQTT::Publish pub(tempTopic, temperature);
     pub.set_retain(true);
     clientMQTT.publish(pub);
@@ -345,7 +354,7 @@ void readSensorAndPublishResults() {
 
   if (h == h) { //h is not NaN
     humidity += "\045";
-    
+
     MQTT::Publish pub(humidTopic, humidity);
     pub.set_retain(true);
     clientMQTT.publish(pub);
@@ -360,6 +369,11 @@ String macToStr(const uint8_t* mac) {
       result += ':';
   }
   return result;
+}
+
+String lastDigitsMacAddress(const uint8_t* mac) {
+  String result = macToStr(mac);
+  return result.substring( result.length() - 5 );
 }
 
 void clearEEPROM() {
